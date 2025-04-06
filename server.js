@@ -10,125 +10,64 @@ const questions = [
     { question: "What is 9 × 3?", answer: 27 },
     { question: "What is 16 ÷ 4?", answer: 4 }
 ];
-const MAX_QUESTIONS = 5;
 
 io.on("connection", (socket) => {
     console.log(`🔵 User connected: ${socket.id}`);
 
-    // Create Room
-    socket.on("create_room", (playerName) => {
-        const roomNumber = Math.floor(1000 + Math.random() * 9000);
-        rooms[roomNumber] = {
-            players: [socket.id],
-            playerNames: { [socket.id]: playerName },
-            gameStarted: false,
-            currentQuestion: null,
-            playerStats: {},
-            questionCount: 0
-        };
-        rooms[roomNumber].playerStats[socket.id] = {
-            correct: 0,
-            wrong: 0,
-            responseTimes: []
-        };
+    socket.on("create_room", () => {
+        let roomNumber = Math.floor(1000 + Math.random() * 9000);
+        rooms[roomNumber] = { players: [socket.id], gameStarted: false, currentQuestion: null };
         socket.join(roomNumber);
-        socket.emit("room_created", roomNumber);
+        socket.emit("room_created", { roomNumber });
     });
 
-    // Join Room
-    socket.on("join_room", (data) => {
-        const { roomNumber, playerName } = data;
-        const room = rooms[roomNumber];
-        if (room && !room.gameStarted) {
-            room.players.push(socket.id);
-            room.playerNames[socket.id] = playerName;
-            room.playerStats[socket.id] = {
-                correct: 0,
-                wrong: 0,
-                responseTimes: []
-            };
+    socket.on("join_room", (roomNumber) => {
+        roomNumber = parseInt(roomNumber);
+        if (rooms[roomNumber] && !rooms[roomNumber].gameStarted) {
+            rooms[roomNumber].players.push(socket.id);
             socket.join(roomNumber);
-            io.to(roomNumber).emit("player_joined", Object.values(room.playerNames));
+            io.to(roomNumber).emit("player_joined", rooms[roomNumber].players);
         } else {
             socket.emit("error", "Room not found or game already started");
         }
     });
 
-    // Start Game
     socket.on("start_game", (roomNumber) => {
-        const room = rooms[roomNumber];
-        if (room && room.players.length > 1) {
-            room.gameStarted = true;
-            room.questionCount = 0;
+        roomNumber = parseInt(roomNumber);
+        if (rooms[roomNumber] && rooms[roomNumber].players.length > 1) {
+            rooms[roomNumber].gameStarted = true;
             sendNewQuestion(roomNumber);
             io.to(roomNumber).emit("game_started");
+        } else {
+            socket.emit("error", "At least two players required to start!");
         }
     });
 
     function sendNewQuestion(roomNumber) {
-        const room = rooms[roomNumber];
-        if (room.questionCount >= MAX_QUESTIONS) {
-            endGame(roomNumber);
-            return;
-        }
+        if (!rooms[roomNumber]) return;
+        const randomIndex = Math.floor(Math.random() * questions.length);
+        const questionData = questions[randomIndex];
 
-        const questionData = questions[Math.floor(Math.random() * questions.length)];
-        room.currentQuestion = {
-            ...questionData,
-            startTime: Date.now(),
-            answeredPlayers: []
-        };
-        room.questionCount++;
-        
-        io.to(roomNumber).emit("new_question", {
-            question: questionData.question,
-            questionCount: room.questionCount
-        });
+        rooms[roomNumber].currentQuestion = questionData;
+        io.to(roomNumber).emit("new_question", questionData);
     }
 
     socket.on("submit_answer", (data) => {
         const { roomNumber, answer } = data;
-        const room = rooms[roomNumber];
-        if (!room || !room.currentQuestion) return;
+        roomNumber = parseInt(roomNumber);
 
-        const playerStats = room.playerStats[socket.id];
-        const responseTime = (Date.now() - room.currentQuestion.startTime) / 1000;
-        const isCorrect = answer === room.currentQuestion.answer;
+        if (!rooms[roomNumber] || !rooms[roomNumber].currentQuestion) return;
 
-        // Update stats
-        if (isCorrect) {
-            playerStats.correct++;
-            playerStats.responseTimes.push(responseTime);
-        } else {
-            playerStats.wrong++;
-        }
+        const isCorrect = answer === rooms[roomNumber].currentQuestion.answer;
+        io.to(roomNumber).emit("answer_result", { player: socket.id, correct: isCorrect });
 
-        // Track answered players
-        room.currentQuestion.answeredPlayers.push(socket.id);
-
-        // Notify player
-        socket.emit("answer_result", isCorrect);
-
-        // Check if all players answered
-        if (room.currentQuestion.answeredPlayers.length === room.players.length) {
-            setTimeout(() => sendNewQuestion(roomNumber), 2000);
-        }
+        setTimeout(() => sendNewQuestion(roomNumber), 2000);
     });
 
-    function endGame(roomNumber) {
-        const room = rooms[roomNumber];
-        const leaderboard = Object.entries(room.playerStats).map(([id, stats]) => ({
-            name: room.playerNames[id],
-            correct: stats.correct,
-            wrong: stats.wrong,
-            avgTime: stats.responseTimes.reduce((a, b) => a + b, 0) / stats.responseTimes.length || 0
-        })).sort((a, b) => b.correct - a.correct || a.avgTime - b.avgTime);
-
-        io.to(roomNumber).emit("game_over", leaderboard);
-        delete rooms[roomNumber];
-    }
-
     socket.on("disconnect", () => {
-        // Cleanup logic remains similar
+        Object.keys(rooms).forEach(roomNumber => {
+            rooms[roomNumber].players = rooms[roomNumber].players.filter(id => id !== socket.id);
+            if (!rooms[roomNumber].players.length) delete rooms[roomNumber];
+        });
     });
 });
